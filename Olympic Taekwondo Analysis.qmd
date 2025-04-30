@@ -1,0 +1,291 @@
+---
+title: "Olympic Taekwondo Analysis"
+format:
+  typst:
+    fig-format: png
+    fig-dpi: 300
+    fig-width: 6
+    fig-height: 4
+---
+
+```{r}
+#| echo: false
+#| message: false
+# !! Do not edit this code chunk !!
+library(tidyverse)
+library(patchwork)
+library(scales) # add percent formatting
+```
+
+TidyTuesday project's 2024-08-06/olympics.csv is the dataset we will use for this project.
+
+```{r}
+
+# Read csv
+
+download.file("https://raw.githubusercontent.com/rfordatascience/tidytuesday/main/data/2024/2024-08-06/olympics.csv", destfile = "olympics.csv")
+olympics <- readr::read_csv("olympics.csv")
+
+olympics
+
+```
+
+**Introduction:**
+
+This project uses the TidyTuesday “olympics” dataset (2024‑08‑06), which you can find more information here:
+https://github.com/rfordatascience/tidytuesday/tree/main/data/2024/2024-08-06
+
+The full CSV contains athlete records across all sports and Olympic Games, including these key columns:
+
+id, name (athlete identifiers)
+sex, age, height, weight (demographics and anthropometrics)
+team, noc, games, year, season, city (nationality and edition)
+sport, event, medal (competition details)
+
+For our analysis, we subset to Taekwondo competitors.
+We also created a binary medalist flag from the medal column.
+We will focus on the variables age, height, weight, sex, year, and medalist to uncover underlying athlete “archetypes” and see how those profiles relate to medal success and gender composition across different Olympic years.
+
+**Question:**
+
+What combinations of factors define athlete profiles most likely to win a medal in Olympic Taekwondo?
+
+**Approach:**
+
+We will begin by subsetting the full Olympics dataset to only Taekwondo competitors.
+
+Next, we will standardize (scale) age, height, and weight variables. Then we will run a principal components analysis to capture the main axes of variation in athlete body size and age. Reducing to the first two PCs allows us to summarize each athlete in two dimensions while preserving as much variance as possible. We will then apply k‑means clustering on the PC scores to let the data itself reveal natural “archetypes” of athletes.
+Around k value of 5 will be good enough to divide the archetypes. By grouping similar athletes together, we can interpret which combinations of age, height, and weight tend to cluster—and then see which clusters are most associated with medal success.
+
+Finally, we will produce two complementary visualizations: A PCA scatter (PC1 vs. PC2), colored by archetype and faceted by Olympic year, to show how these profiles distribute over time; a compound bar chart—side by side—showing each archetype’s medal-winning rate and its gender composition, to directly compare which profiles are most successful and how they break down by sex. This workflow (combining PCA for dimension reduction, clustering for profile discovery, and targeted plots for interpretation) will reveal the combinations of factors that define the athlete profiles most likely to win medals in Olympic Taekwondo.
+
+**Analysis:**
+
+```{r}
+
+# Data filtering
+
+taekwondo <- olympics |> 
+  filter(!is.na(height)) |>             # only keep athletes with known height
+  filter(!is.na(weight)) |>             # only keep athletes with known weight
+  filter(sport == "Taekwondo") |>       # keep only Taekwondo sport
+  mutate(
+    medalist = case_when(               # add column to track medalist vs not
+      is.na(medal) ~ "non-medalist",
+      !is.na(medal) ~ "medalist"        # any medals (Gold, Silver, Bronze) count
+    )
+  )
+
+taekwondo
+
+```
+
+```{r}
+
+# Perform PCA on age, height, weight
+
+features_scaled <- taekwondo |>
+  select(age, height, weight) |>
+  scale(center = TRUE, scale = TRUE)
+
+pca_res <- prcomp(features_scaled)
+
+# Extract PC scores and bind metadata
+
+scores <- as_tibble(pca_res$x) |>
+  bind_cols(taekwondo |> select(medalist, sex, year))
+
+# Cluster athletes in PC space (k‑means with k = 5)
+
+set.seed(123)
+k <- 5
+km <- kmeans(scores |> select(PC1, PC2), centers = k)
+scores <- scores |>
+  mutate(archetype = factor(km$cluster))
+
+```
+
+```{r}
+
+# Check profiles of athletes by archetype
+
+profiles <- taekwondo |>
+  bind_cols(archetype = scores$archetype) |>
+  group_by(archetype) |>
+  summarise(
+    n            = n(),
+    mean_age     = mean(age),
+    sd_age       = sd(age),
+    mean_height  = mean(height),
+    sd_height    = sd(height),
+    mean_weight  = mean(weight),
+    sd_weight    = sd(weight)
+  )
+
+print(profiles)
+
+```
+
+```{r}
+
+# Update archetype and labels with profiles data
+
+scores <- scores |>
+  mutate(
+    archetype = factor(archetype,
+      levels = c(1, 2, 3, 4, 5),
+      labels = c(
+        "Veteran lightweights",
+        "Rookie lightweights",
+        "Veteran heavyweights",
+        "Rookie heavyweights",
+        "Super heavy elites"
+      )
+    ),
+    sex = recode(sex,
+      F = "Female",
+      M = "Male"
+    )
+  )
+
+```
+
+```{r}
+
+# Prepare visualizations
+
+# Visualization 1 – PCA scatter colored by archetype, faceted by year
+
+p_scatter <- ggplot(scores, aes(x = PC1, y = PC2, color = archetype)) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~ year) +
+  
+  # Set a custom palette for archetypes
+  
+  scale_color_manual(values = c(
+    "Veteran lightweights"   = "#A23C42",
+    "Rookie lightweights"    = "#3B8EA5",
+    "Veteran heavyweights"   = "#F6AD55",
+    "Rookie heavyweights"    = "#68D391",
+    "Super heavy elites"     = "#805AD5"
+  )) +
+  
+  labs(
+    title = "Athlete Archetypes in PCA Space",
+    x     = "PC1",
+    y     = "PC2",
+    color = "Archetype"
+  ) +
+  
+  theme_minimal() +
+  theme(
+    
+    # set background colors
+    
+    plot.background   = element_rect(fill = "#FEF8F0", color = NA),
+    panel.background  = element_rect(fill = "#FEF8F0", color = NA),
+    legend.background = element_rect(fill = "#FEF8F0", color = NA),
+    
+    # position legend inside at bottom‑right
+    
+    legend.position     = c(0.95, 0.05),
+    legend.justification = c("right", "bottom")
+  )
+
+
+# Visualization 2 - Compute summary statistics by archetype
+
+medal_rate <- scores |>
+  group_by(archetype) |>
+  summarise(rate = mean(medalist == "medalist"))
+
+sex_comp <- scores |>
+  count(archetype, sex) |>
+  group_by(archetype) |>
+  mutate(prop = n / sum(n))
+
+# Order archetype levels by ascending medal rate
+
+ordered_levels <- medal_rate |>
+  arrange(rate) |>
+  pull(archetype)
+
+medal_rate <- medal_rate |>
+  mutate(archetype = factor(archetype, levels = ordered_levels))
+
+sex_comp <- sex_comp |>
+  mutate(archetype = factor(archetype, levels = ordered_levels))
+
+# Visualization 2a - Bar chart of medal‑winning rate by archetype
+
+p_medal <- ggplot(medal_rate, aes(x = archetype, y = rate)) +
+  geom_col(fill = "#805AD5") +
+  scale_y_continuous(labels = percent_format()) +
+  labs(
+    title = "Medal Winning Rate by Archetype",
+    x     = "Archetype",
+    y     = "Medal Rate"
+  ) +
+  coord_flip() +
+  theme_minimal() +
+  theme(
+    plot.background   = element_rect(fill = "#FEF8F0", color = NA),
+    panel.background  = element_rect(fill = "#FEF8F0", color = NA),
+    legend.background = element_rect(fill = "#FEF8F0", color = NA)
+  )
+
+# Visualization 2b - Stacked bar chart of gender composition by archetype
+
+p_sex <- ggplot(sex_comp, aes(x = archetype, y = prop, fill = sex)) +
+  geom_col() +
+  scale_fill_manual(values = c(
+    "Female" = "#A23C42",
+    "Male"   = "#3B8EA5"
+  )) +
+  labs(
+    title = "Gender Composition by Archetype",
+    x     = NULL,
+    y     = "Proportion",
+    fill  = "Sex"
+  ) +
+  coord_flip() +
+  theme_minimal() +
+  theme(
+    plot.background   = element_rect(fill = "#FEF8F0", color = NA),
+    panel.background  = element_rect(fill = "#FEF8F0", color = NA),
+    legend.background = element_rect(fill = "#FEF8F0", color = NA),
+    axis.text.y       = element_blank(),
+    axis.ticks.y      = element_blank()
+  )
+
+# Visualization 2 Compound plot – medal rates + gender composition side by side
+
+p_composite <- p_medal + p_sex + plot_layout(ncol = 2)
+
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 7
+#| out-width: "100%"
+
+# Render visualization 1
+
+print(p_scatter)
+
+```
+
+```{r}
+#| fig-width: 10
+#| fig-height: 5
+#| out-width: "100%"
+
+# Render visualization 2
+
+print(p_composite)
+
+```
+
+**Discussion:**
+
+The analysis reveals that the tallest, heaviest athletes in their mid‑20s—the “Super‑heavy elites”, enjoy the highest medal rate (around 35%). This is followed by the younger, tall “Rookie heavyweights” (about 28%), while both lightweight clusters medal at roughly 20–25% and the “Veteran heavyweights” lag furthest behind (~13%). Heavy‐division archetypes are predominantly male (70–80%), whereas lightweight clusters skew female (up to 70% women in the rookie lightweights). Taken together, this suggests that in Olympic Taekwondo a profile combining mid‑20s age, extreme height, and high weight, particularly among male competitors, is most likely to win a medal.
